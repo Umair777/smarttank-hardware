@@ -1,6 +1,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <RadioLib.h>
+#include <esp_system.h>
 
 #include "display/display.h"
 #include "ota/ota.h"
@@ -12,10 +13,32 @@
 #endif
 
 // ---------------- WIFI ----------------
-static const char* WIFI_SSID_1 = "Airtel_mohd_3792";
-static const char* WIFI_PASS_1 = "Air@28347";
-static const char* WIFI_SSID_2 = "Airtel_umai_0321";
-static const char* WIFI_PASS_2 = "air96843";
+static const char* WIFI_SSID_1 = "Umair";
+static const char* WIFI_PASS_1 = "12345678";
+
+static const char* WIFI_SSID_2 = "STEPART_TEKSNA";
+static const char* WIFI_PASS_2 = "Alhamdulillah";  
+
+static const char* WIFI_SSID_3 = "Airtel_mohd_3792";
+static const char* WIFI_PASS_3 = "Air@28347"; 
+
+static const char* WIFI_SSID_4 = "Airtel_umai_0321";
+static const char* WIFI_PASS_4 = "air96843";  
+
+struct WiFiCredential {
+    const char* ssid;
+    const char* password;
+};
+
+static const WiFiCredential WIFI_CREDENTIALS[] = {
+    {WIFI_SSID_1, WIFI_PASS_1},
+    {WIFI_SSID_2, WIFI_PASS_2},
+    {WIFI_SSID_3, WIFI_PASS_3},
+    {WIFI_SSID_4, WIFI_PASS_4},
+};
+static constexpr size_t WIFI_CREDENTIAL_COUNT = sizeof(WIFI_CREDENTIALS) / sizeof(WIFI_CREDENTIALS[0]);
+static constexpr const char* SUPABASE_HOST = "yljggigahlagdihhycfj.supabase.co";
+
 
 // ---------------- SUPABASE ----------------
 static const char* SUPABASE_URL = "https://yljggigahlagdihhycfj.supabase.co";
@@ -69,23 +92,34 @@ static bool motorAutomationState = false;
 // ---------------- SCHEDULER ----------------
 static constexpr uint32_t WIFI_RECONNECT_INTERVAL_MS = 15000;
 static constexpr uint32_t WIFI_CONNECT_TIMEOUT_MS = 6000;
+static constexpr uint32_t INTERNET_CHECK_INTERVAL_MS = 15000;
+static constexpr uint8_t DNS_FAILURES_BEFORE_FAILOVER = 2;
 static constexpr uint32_t CLOUD_UPLOAD_INTERVAL_MS = 3000;
 static constexpr uint32_t OTA_CHECK_INTERVAL_MS = 15UL * 60UL * 1000UL;
 static constexpr uint32_t MOTOR_EVALUATE_INTERVAL_MS = 250;
+static constexpr uint32_t RELAY_MIN_SWITCH_INTERVAL_MS = 5000;
+static constexpr uint32_t RELAY_QUIET_WINDOW_MS = 750;
 static constexpr uint32_t DISPLAY_MIN_INTERVAL_MS = 500;
 static constexpr uint32_t DISPLAY_MOTOR_SCREEN_MS = 2000;
 static constexpr uint32_t DIAGNOSTIC_INTERVAL_MS = 10000;
+static constexpr uint32_t LORA_RECOVERY_INTERVAL_MS = 30000;
 
 static uint32_t lastWiFiAttemptMs = 0;
 static uint32_t wifiAttemptStartedMs = 0;
 static uint8_t wifiCredentialIndex = 0;
 static bool wifiConnectInProgress = false;
+static bool cloudConnected = false;
+static uint8_t consecutiveDnsFailures = 0;
+static uint32_t lastInternetCheckMs = 0;
 static uint32_t lastCloudUploadMs = 0;
 static uint32_t lastOtaCheckMs = 0;
 static uint32_t lastMotorEvaluateMs = 0;
+static uint32_t lastRelaySwitchMs = 0;
+static uint32_t relayQuietUntilMs = 0;
 static uint32_t lastDisplayMs = 0;
 static uint32_t lastDiagnosticMs = 0;
 static uint32_t motorScreenUntilMs = 0;
+static uint32_t lastLoRaActivityMs = 0;
 static bool motorScreenActive = false;
 
 struct TaskTiming {
@@ -115,6 +149,33 @@ static inline void recordTiming(TaskTiming& timing, uint32_t startedUs) {
 static void IRAM_ATTR onLoRaDio0() {
     loraPacketAvailable = true;
     loraInterruptCount++;
+}
+
+static void printResetReason() {
+    Serial.print("Last reset reason: ");
+    switch (esp_reset_reason()) {
+        case ESP_RST_POWERON:
+            Serial.println("power-on");
+            break;
+        case ESP_RST_BROWNOUT:
+            Serial.println("brownout");
+            break;
+        case ESP_RST_TASK_WDT:
+            Serial.println("task watchdog");
+            break;
+        case ESP_RST_WDT:
+            Serial.println("watchdog");
+            break;
+        case ESP_RST_PANIC:
+            Serial.println("panic/exception");
+            break;
+        case ESP_RST_SW:
+            Serial.println("software restart");
+            break;
+        default:
+            Serial.println(static_cast<int>(esp_reset_reason()));
+            break;
+    }
 }
 
 static int calculateWaterLevel(int distance) {
@@ -184,16 +245,56 @@ static void updateStableLevel(int waterLevel) {
 }
 
 static void beginWiFiConnection() {
-    const char* ssid = (wifiCredentialIndex == 0) ? WIFI_SSID_1 : WIFI_SSID_2;
-    const char* pass = (wifiCredentialIndex == 0) ? WIFI_PASS_1 : WIFI_PASS_2;
+    const WiFiCredential& credential = WIFI_CREDENTIALS[wifiCredentialIndex];
 
     Serial.print("Connecting WiFi: ");
-    Serial.println(ssid);
+    Serial.println(credential.ssid);
     WiFi.disconnect(false, false);
-    WiFi.begin(ssid, pass);
+    WiFi.begin(credential.ssid, credential.password);
     wifiAttemptStartedMs = millis();
     lastWiFiAttemptMs = wifiAttemptStartedMs;
     wifiConnectInProgress = true;
+}
+
+static void setCloudConnected(bool connected) {
+    if (cloudConnected == connected) {
+        return;
+    }
+
+    cloudConnected = connected;
+    receiver.displayDirty = true;
+    Serial.println(cloudConnected ? "Supabase DNS reachable" : "No Supabase internet connection");
+}
+
+static void failOverWiFi() {
+    wifiCredentialIndex = (wifiCredentialIndex + 1) % WIFI_CREDENTIAL_COUNT;
+    consecutiveDnsFailures = 0;
+    lastInternetCheckMs = 0;
+    setCloudConnected(false);
+    beginWiFiConnection();
+}
+
+static void checkInternetConnection(uint32_t now) {
+    if (now - lastInternetCheckMs < INTERNET_CHECK_INTERVAL_MS && lastInternetCheckMs != 0) {
+        return;
+    }
+    lastInternetCheckMs = now;
+
+    IPAddress supabaseIp;
+    if (WiFi.hostByName(SUPABASE_HOST, supabaseIp)) {
+        consecutiveDnsFailures = 0;
+        setCloudConnected(true);
+        return;
+    }
+
+    consecutiveDnsFailures++;
+    setCloudConnected(false);
+    Serial.printf("Supabase DNS failed (%u/%u)\n", consecutiveDnsFailures, DNS_FAILURES_BEFORE_FAILOVER);
+
+    if (consecutiveDnsFailures >= DNS_FAILURES_BEFORE_FAILOVER) {
+        Serial.println("Switching to the next WiFi network");
+        failOverWiFi();
+    }
 }
 
 static void handleWiFi() {
@@ -206,9 +307,12 @@ static void handleWiFi() {
             Serial.println(WiFi.localIP());
         }
         wifiConnectInProgress = false;
+        checkInternetConnection(now);
         recordTiming(wifiTiming, startedUs);
         return;
     }
+
+    setCloudConnected(false);
 
     if (wifiConnectInProgress && now - wifiAttemptStartedMs < WIFI_CONNECT_TIMEOUT_MS) {
         recordTiming(wifiTiming, startedUs);
@@ -216,7 +320,9 @@ static void handleWiFi() {
     }
 
     if (!wifiConnectInProgress || now - lastWiFiAttemptMs >= WIFI_RECONNECT_INTERVAL_MS) {
-        wifiCredentialIndex = (wifiConnectInProgress && wifiCredentialIndex == 0) ? 1 : 0;
+        if (wifiConnectInProgress) {
+            wifiCredentialIndex = (wifiCredentialIndex + 1) % WIFI_CREDENTIAL_COUNT;
+        }
         beginWiFiConnection();
     }
 
@@ -237,9 +343,17 @@ static void applyMotorOutput(bool shouldRunMotor) {
         return;
     }
 
+    const uint32_t now = millis();
+    if (!relayWritePending &&
+        static_cast<int32_t>(now - lastRelaySwitchMs) < static_cast<int32_t>(RELAY_MIN_SWITCH_INTERVAL_MS)) {
+        return;
+    }
+
     digitalWrite(MOTOR_PIN_NO, shouldRunMotor ? HIGH : LOW);
     motorState = shouldRunMotor;
     relayWritePending = false;
+    lastRelaySwitchMs = now;
+    relayQuietUntilMs = now + RELAY_QUIET_WINDOW_MS;
     receiver.displayDirty = true;
     motorScreenActive = true;
     motorScreenUntilMs = 0;
@@ -287,7 +401,14 @@ static void handleMotor() {
 
 static void handleLoRa() {
     const uint32_t startedUs = micros();
+    const uint32_t now = millis();
     if (!loraPacketAvailable) {
+        if (now - lastLoRaActivityMs >= LORA_RECOVERY_INTERVAL_MS) {
+            const int state = radio.startReceive();
+            lastLoRaActivityMs = now;
+            Serial.print("LoRa RX watchdog restart, code ");
+            Serial.println(state);
+        }
         recordTiming(loraTiming, startedUs);
         return;
     }
@@ -308,6 +429,7 @@ static void handleLoRa() {
     if (state != RADIOLIB_ERR_NONE) {
         Serial.print("LoRa read failed, code ");
         Serial.println(state);
+        lastLoRaActivityMs = now;
         recordTiming(loraTiming, startedUs);
         return;
     }
@@ -337,6 +459,7 @@ static void handleLoRa() {
     receiver.cloudDirty = true;
     motorScreenActive = true;
     motorScreenUntilMs = 0;
+    lastLoRaActivityMs = now;
 
     Serial.print("Distance: ");
     Serial.print(distance);
@@ -351,6 +474,11 @@ static void handleLoRa() {
 static void handleCloud() {
     const uint32_t startedUs = micros();
     const uint32_t now = millis();
+    if (static_cast<int32_t>(now - relayQuietUntilMs) < 0) {
+        recordTiming(cloudTiming, startedUs);
+        return;
+    }
+
     if (!receiver.hasPacket || !receiver.cloudDirty || now - lastCloudUploadMs < CLOUD_UPLOAD_INTERVAL_MS) {
         recordTiming(cloudTiming, startedUs);
         return;
@@ -368,12 +496,23 @@ static void handleCloud() {
         receiver.batteryPercent
     );
 
+    lastCloudUploadMs = now;
+
+    if (cloud.httpStatus != 200) {
+        Serial.printf("Cloud upload failed: HTTP %d\n", cloud.httpStatus);
+        if (cloud.httpStatus < 0) {
+            failOverWiFi();
+        }
+        recordTiming(cloudTiming, startedUs);
+        return;
+    }
+
     supplyState = cloud.supply;
     motorAutomationState = cloud.motorAutomation;
     overflowThreshold = (cloud.overflowThreshold > 0) ? cloud.overflowThreshold : 90;
     emptyDistanceCm = overflowThreshold;
     receiver.cloudDirty = false;
-    lastCloudUploadMs = now;
+    setCloudConnected(true);
 
     if (cloud.ota) {
         Serial.println("Cloud requested reboot for OTA");
@@ -386,6 +525,11 @@ static void handleCloud() {
 static void handleOTA() {
     const uint32_t startedUs = micros();
     const uint32_t now = millis();
+    if (static_cast<int32_t>(now - relayQuietUntilMs) < 0) {
+        recordTiming(otaTiming, startedUs);
+        return;
+    }
+
     if (now - lastOtaCheckMs < OTA_CHECK_INTERVAL_MS) {
         recordTiming(otaTiming, startedUs);
         return;
@@ -402,6 +546,10 @@ static void handleOTA() {
 static void handleDisplay() {
     const uint32_t startedUs = micros();
     const uint32_t now = millis();
+    if (static_cast<int32_t>(now - relayQuietUntilMs) < 0) {
+        recordTiming(displayTiming, startedUs);
+        return;
+    }
 
     if (now - lastDisplayMs < DISPLAY_MIN_INTERVAL_MS) {
         recordTiming(displayTiming, startedUs);
@@ -428,7 +576,7 @@ static void handleDisplay() {
     }
 
     if (receiver.displayDirty) {
-        displayStatus(receiver.tankLevel, receiver.rssi, receiver.batteryPercent);
+        displayStatus(receiver.tankLevel, receiver.rssi, receiver.batteryPercent, cloudConnected);
         receiver.displayDirty = false;
         lastDisplayMs = now;
     }
@@ -471,15 +619,20 @@ static void initLoRa() {
 
     radio.setPacketReceivedAction(onLoRaDio0);
     const int receiveState = radio.startReceive();
+    lastLoRaActivityMs = millis();
     Serial.println(receiveState == RADIOLIB_ERR_NONE ? "success!" : "RX start failed");
 }
 
 void setup() {
     Serial.begin(115200);
+    delay(200);
+    printResetReason();
+
     initDisplay();
     initMotorPins();
 
     WiFi.mode(WIFI_STA);
+    WiFi.setSleep(false);
     WiFi.setAutoReconnect(false);
     beginWiFiConnection();
 

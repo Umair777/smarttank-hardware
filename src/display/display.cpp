@@ -333,7 +333,8 @@ void displayStatus(
     
     int capacity,
     int rssi,
-    int batteryPercent
+    int batteryPercent,
+    bool cloudConnected
 )
 {
    // =====================================================
@@ -535,6 +536,13 @@ void displayStatus(
         83,
         ST77XX_WHITE
     );
+
+    // Cloud status: Wi-Fi may be connected while internet/DNS is unavailable.
+    display.setFont();
+    display.setTextSize(1);
+    display.setTextColor(cloudConnected ? ST77XX_GREEN : ST77XX_RED);
+    display.setCursor(panelX + 3, 80);
+    display.print(cloudConnected ? "CLOUD OK" : "NO INTERNET");
 
     // =====================================================
     // RSSI

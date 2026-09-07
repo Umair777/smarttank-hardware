@@ -9,7 +9,8 @@ void initDisplay();
 void displayStatus(
     int capacity,
     int rssi,
-    int batteryPercent
+    int batteryPercent,
+    bool cloudConnected
 );
 
 void displayMotorStatus(bool motorRunning);

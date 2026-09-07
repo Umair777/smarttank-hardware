@@ -5,6 +5,7 @@ struct CloudResponse {
     bool ota;
     bool motorAutomation;
     int overflowThreshold;
+    int httpStatus;
 };
 
 void supabaseInit(const char* url, const char* key);
