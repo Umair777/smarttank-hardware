@@ -22,7 +22,7 @@ static const char* WIFI_PASS_2 = "Alhamdulillah";
 static const char* WIFI_SSID_3 = "Airtel_mohd_3792";
 static const char* WIFI_PASS_3 = "Air@28347"; 
 
-static const char* WIFI_SSID_4 = "Airtel_umai_0321";
+static const char* WIFI_SSID_4 = "Airtel_umai_032    1";
 static const char* WIFI_PASS_4 = "air96843";  
 
 struct WiFiCredential {
