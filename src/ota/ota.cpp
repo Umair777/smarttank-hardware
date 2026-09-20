@@ -39,6 +39,7 @@ void checkForOTAUpdate() {
     Serial.println("Checking for firmware...");
 
     String payload;
+    payload.reserve(512);
     int httpCode = HttpClientWrapper::get(deviceEndpoint, payload, anonKey);
 
     if (httpCode == 200) {

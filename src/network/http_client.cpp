@@ -1,10 +1,16 @@
 #include "http_client.h"
+#include <WiFiClientSecure.h>
 
 int HttpClientWrapper::get(String url, String& response, String apiKey) {
+    WiFiClientSecure client;
+    client.setInsecure();  // Temporary diagnostic: use a trusted CA certificate in production.
+
     HTTPClient http;
 
+    http.begin(client, url);
+    http.setTimeout(15000);
+    http.setReuse(false);
     http.addHeader("Content-Type", "application/json");
-    http.begin(url);
     http.addHeader("apikey", apiKey);
     http.addHeader("Authorization", "Bearer " + apiKey);
 
@@ -19,9 +25,14 @@ int HttpClientWrapper::get(String url, String& response, String apiKey) {
 }
 
 int HttpClientWrapper::post(String url, String payload, String &response, String apiKey) {
+    WiFiClientSecure client;
+    client.setInsecure();  // Temporary diagnostic: use a trusted CA certificate in production.
+
     HTTPClient http;
 
-    http.begin(url);
+    http.begin(client, url);
+    http.setTimeout(15000);
+    http.setReuse(false);
     http.addHeader("Content-Type", "application/json");
     http.addHeader("apikey", apiKey);
     http.addHeader("Authorization", "Bearer " + apiKey);

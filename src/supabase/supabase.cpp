@@ -32,13 +32,14 @@ int extractIntValue(String response, String key) {
 
 CloudResponse ota_device_update_and_fetch(int tank, bool motor, int rssi, int battery) {
 
-    CloudResponse result = {false, false, false};
+    CloudResponse result = {false, false, false, 0, 0};
 
     if (WiFi.status() != WL_CONNECTED) return result;
 
     String url = SUPABASE_URL + "/rest/v1/rpc/ota_update_device_and_get_supply_automation_height";
 
     String payload = "{";
+    payload.reserve(128);
     payload += "\"p_device_uid\":\"" + DEVICE_ID + "\",";
     payload += "\"p_tank_level\":" + String(tank) + ",";
     payload += "\"p_motor_state\":" + String(motor ? "true" : "false") + ",";
@@ -47,8 +48,11 @@ CloudResponse ota_device_update_and_fetch(int tank, bool motor, int rssi, int ba
     payload += "}";
 
     String response;
+    response.reserve(256);
     int code = HttpClientWrapper::post(url, payload, response, SUPABASE_KEY);
+    result.httpStatus = code;
 
+    Serial.printf("RPC HTTP status: %d\n", code);
     Serial.println("RPC Response: " + response);
 
     if (code == 200) {
